@@ -377,6 +377,38 @@
 
     .card-meta { display: flex; flex-wrap: wrap; gap: 6px; }
 
+    .card.done-card::before { background: var(--done); }
+    .card.pending-card::before { background: var(--pending); }
+
+    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+
+    .card-info { color: var(--muted); font-size: 13px; line-height: 1.4; }
+    .card-info strong { color: var(--text); }
+
+    .badge {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .badge.done { color: var(--done); background: var(--done-soft); }
+    .badge.pending { color: var(--pending); background: var(--pending-soft); }
+    .badge.warn { color: #8a5a00; background: var(--orange-soft); }
+    .badge.neutral { color: var(--muted); background: var(--surface-soft); }
+
+    .progress-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
     .summary {
       display: grid;
       gap: 8px;
@@ -573,6 +605,7 @@
     <section id="viewCursos" class="view">
       <h2 class="screen-title">Elige la capacitación</h2>
       <p id="cursosCopy" class="screen-copy">Selecciona la capacitación que vas a rendir.</p>
+      <div id="progressSummary" class="progress-summary"></div>
       <div id="pilarChips" class="chips"></div>
       <div class="panel" style="margin-bottom: 12px; padding: 14px;">
         <label class="field-label" for="cursoSearch">Buscar</label>
@@ -715,8 +748,46 @@
         return;
       }
 
+      const r = colaborador.resumen || { total: 0, aprobadas: 0, pendientes: 0 };
       card.innerHTML = `<span class="avatar">${escapeHtml(iniciales(colaborador.nombre))}</span>
-        <div><strong>${escapeHtml(colaborador.nombre)}</strong><span>${escapeHtml(colaborador.centro_distribucion || '')}</span></div>`;
+        <div><strong>${escapeHtml(colaborador.nombre)}</strong>
+        <span>${escapeHtml(colaborador.centro_distribucion || '')} · ${escapeHtml(r.aprobadas)} de ${escapeHtml(r.total)} aprobadas${r.pendientes ? ` · ${escapeHtml(r.pendientes)} por rendir` : ''}</span></div>`;
+    }
+
+    // Vuelve a consultar el estado del colaborador (por ejemplo, después de enviar).
+    async function refrescarEstados() {
+      if (!state.colaborador) return;
+      try {
+        const data = await runApi('obtenerColaboradorPorDni', state.colaborador.dni);
+        if (data && data.encontrado && state.colaborador && data.dni === state.colaborador.dni) {
+          state.colaborador = data;
+          if (state.view === 'viewCursos') renderCursos();
+        }
+      } catch (error) {
+        // Si falla, se mantiene el estado anterior.
+      }
+    }
+
+    const ESTADOS = {
+      APROBADA: { texto: 'Aprobada', badge: 'done', card: 'done-card', orden: 3 },
+      DESAPROBADA: { texto: 'Desaprobada', badge: 'pending', card: 'pending-card', orden: 1 },
+      REFUERZO_PENDIENTE: { texto: 'Refuerzo pendiente', badge: 'warn', card: 'pending-card', orden: 0 },
+      PENDIENTE: { texto: 'Pendiente', badge: 'neutral', card: '', orden: 2 }
+    };
+
+    function estadoDe(capacitacionId) {
+      const estados = (state.colaborador && state.colaborador.estados) || {};
+      return estados[capacitacionId] || { estado: 'PENDIENTE', intentos: 0 };
+    }
+
+    function renderResumenProgreso() {
+      const r = (state.colaborador && state.colaborador.resumen) || null;
+      const cont = $('#progressSummary');
+      if (!r) { cont.innerHTML = ''; return; }
+      cont.innerHTML = `
+        <div class="stat"><strong>${escapeHtml(r.total)}</strong><span>Asignadas</span></div>
+        <div class="stat"><strong style="color:var(--done)">${escapeHtml(r.aprobadas)}</strong><span>Aprobadas</span></div>
+        <div class="stat"><strong style="color:var(--pending)">${escapeHtml(r.pendientes)}</strong><span>Por rendir</span></div>`;
     }
 
     /* ---------- Paso 2: capacitaciones ---------- */
@@ -740,10 +811,16 @@
 
     function renderCursos() {
       const filtro = normalize($('#cursoSearch').value);
-      const lista = state.capacitaciones.filter(c =>
-        (!state.pilar || c.pilar === state.pilar) &&
-        normalize(`${c.capacitacion_id} ${c.nombre_capacitacion}`).includes(filtro)
-      );
+      // Primero lo que falta rendir; las aprobadas al final.
+      const lista = state.capacitaciones
+        .filter(c =>
+          (!state.pilar || c.pilar === state.pilar) &&
+          normalize(`${c.capacitacion_id} ${c.nombre_capacitacion}`).includes(filtro))
+        .sort((a, b) =>
+          ESTADOS[estadoDe(a.capacitacion_id).estado].orden - ESTADOS[estadoDe(b.capacitacion_id).estado].orden ||
+          a.capacitacion_id.localeCompare(b.capacitacion_id));
+
+      renderResumenProgreso();
 
       $('#cursosCopy').textContent = state.colaborador
         ? `${state.colaborador.nombre}, selecciona la capacitación que vas a rendir.`
@@ -755,15 +832,36 @@
         return;
       }
 
-      cont.innerHTML = lista.map(c => `<button class="card" type="button" data-id="${escapeHtml(c.capacitacion_id)}">
-          <span class="card-title-group">
-            <span class="course-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Z"/><path d="M8 7h6M8 11h6"/></svg></span>
-            <span class="card-title">${escapeHtml(tituloCurso(c))}</span>
-          </span>
-          <span class="card-meta"><span class="mini-chip">${escapeHtml(c.capacitacion_id)}</span><span class="mini-chip">${escapeHtml(c.pilar)}</span></span>
-        </button>`).join('');
+      cont.innerHTML = lista.map(c => {
+        const e = estadoDe(c.capacitacion_id);
+        const cfg = ESTADOS[e.estado] || ESTADOS.PENDIENTE;
+        const info = e.intentos > 0
+          ? `Última nota: <strong>${escapeHtml(formatNota(e.ultima_nota))}/20</strong> · ${escapeHtml(e.ultima_fecha)}` +
+            (e.ultimo_tipo === 'REFUERZO' ? ' · Refuerzo' : '') +
+            (e.intentos > 1 ? `<br>${escapeHtml(e.intentos)} intentos · Mejor nota: ${escapeHtml(formatNota(e.mejor_nota))}` : '')
+          : 'Aún no la rindes.';
 
-      cont.querySelectorAll('.card').forEach(btn => btn.addEventListener('click', () => abrirCapacitacion(btn.dataset.id)));
+        return `<button class="card ${cfg.card}" type="button" data-id="${escapeHtml(c.capacitacion_id)}">
+          <span class="card-head">
+            <span class="card-title-group">
+              <span class="course-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2Z"/><path d="M8 7h6M8 11h6"/></svg></span>
+              <span class="card-title">${escapeHtml(tituloCurso(c))}</span>
+            </span>
+            <span class="badge ${cfg.badge}">${escapeHtml(cfg.texto)}</span>
+          </span>
+          <span class="card-info">${info}</span>
+          <span class="card-meta"><span class="mini-chip">${escapeHtml(c.capacitacion_id)}</span><span class="mini-chip">${escapeHtml(c.pilar)}</span></span>
+        </button>`;
+      }).join('');
+
+      cont.querySelectorAll('.card').forEach(btn => btn.addEventListener('click', () => {
+        const e = estadoDe(btn.dataset.id);
+        if (e.estado === 'APROBADA' &&
+            !window.confirm(`Ya aprobaste esta capacitación (última nota ${formatNota(e.ultima_nota)} el ${e.ultima_fecha}). ¿Quieres rendirla otra vez?`)) {
+          return;
+        }
+        abrirCapacitacion(btn.dataset.id);
+      }));
     }
 
     async function abrirCapacitacion(capacitacionId) {
@@ -874,6 +972,7 @@
         renderResultado(resultado);
         showView('viewResultado');
         setStatus('Evaluación registrada correctamente.', 'ok');
+        refrescarEstados();
       } catch (error) {
         state.enviando = false;
         $('#sendButton').disabled = false;
